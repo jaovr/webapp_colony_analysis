@@ -18,15 +18,30 @@ function App() {
     }
   }
 
-  function converterImagem() {
-    if (!imagemOriginal) return;
-    
+  async function converterImagem() {
+    if(!imagemOriginal) return;
+
     setCarregando(true);
-    
-    setTimeout(() => {
-      setImagemConvertida(imagemOriginal);
+
+    try {
+      const input = document.getElementById("fileInput");
+      const file = input.files[0];
+      const formData = new FormData();
+      formData.append("imagem", file);
+
+      const resposta = await fetch("http://localhost:8000/cinza/", {
+        method: "POST",
+        body: formData,
+      });
+
+      const blob = await resposta.blob();
+      const urlImagemCinza = URL.createObjectURL(blob);
+      setImagemConvertida(urlImagemCinza);
+    } catch (erro) {
+      console.error("Erro ao converter imagem:", erro);
+    } finally {
       setCarregando(false);
-    }, 1000);
+    }
   }
 
   function toggleSidebar() {
