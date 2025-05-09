@@ -229,7 +229,7 @@ main {
   display: flex;
   gap: 20px;
   height: calc(100vh - var(--header-height) - var(--footer-height) - 140px);
-  min-height: 300px;
+  min-height: 700px;
 }
 
 .image-panel {
