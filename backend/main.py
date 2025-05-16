@@ -1,4 +1,3 @@
-# Make sure to run: pip install fastapi python-multipart uvicorn
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
