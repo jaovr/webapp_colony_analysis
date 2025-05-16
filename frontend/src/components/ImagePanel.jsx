@@ -9,13 +9,13 @@ export default function ImagePanel({ titulo, imagem, carregando, vazioMsg }) {
                 p: 3,
                 width: '100%',
                 maxWidth: 400,
-                minHeight: 300,
+                minHeight: 400,
                 borderRadius: 3,
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
                 justifyContent: 'flex-start',
-                gap: 2,
+                gap: 15,
                 bgcolor: 'background.paper',
             }}
         >
