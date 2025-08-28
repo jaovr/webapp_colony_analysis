@@ -1,9 +1,8 @@
-from fastapi import FastAPI, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
-import cv2
+from fastapi.middleware.cors import CORSMiddleware   # <-- IMPORT CORS
+import cv2, io
 import numpy as np
-import io
 
 app = FastAPI()
 
@@ -15,25 +14,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.post("/cinza/")
-async def converter_para_cinza(imagem: UploadFile = File(...)):
-    # Lê os bytes da imagem
-    conteudo = await imagem.read()
+# ========= OPS =========
 
-    # Converte os bytes para array NumPy
-    np_array = np.frombuffer(conteudo, np.uint8)
+def to_bgr(np_bytes: bytes) -> np.ndarray:
+    array = np.frombuffer(np_bytes, np.uint8)
+    image = cv2.imdecode(array, cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError("Fail to image decode")
+    return image
 
-    # Decodifica como imagem
-    img_colorida = cv2.imdecode(np_array, cv2.IMREAD_COLOR)
+def to_gray(bgr: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
-    # Converte para escala de cinza
-    img_cinza = cv2.cvtColor(img_colorida, cv2.COLOR_BGR2GRAY)
+def box_blur(image: np.ndarray, k=10) -> np.ndarray:
+    if isinstance(k, int):
+        k = (k, k)
+    return cv2.blur(image, k)
 
-    # Codifica de volta para JPG
-    sucesso, buffer = cv2.imencode('.jpg', img_cinza)
-    if not sucesso:
-        return {"erro": "Erro ao converter a imagem."}
+def to_jpeg_bytes(image: np.ndarray) -> bytes:
+    ok, buf = cv2.imencode(".jpg", image)      # <-- ENCODE, não decode
+    if not ok:
+        raise ValueError("Fail to convert image to JPEG")
+    return buf.tobytes()                        # <-- tobytes()
 
-    # Retorna como imagem
-    retorno = io.BytesIO(buffer)
-    return StreamingResponse(retorno, media_type="image/jpeg")
+def stream(image: np.ndarray) -> StreamingResponse:   # <-- ndarray
+    return StreamingResponse(io.BytesIO(to_jpeg_bytes(image)), media_type="image/jpeg")
+
+# ======== PIPELINE ========
+
+def pipeline_gray(bgr_img: np.ndarray):
+    g = to_gray(bgr_img)
+    return {"gray": g}
+
+# ======== ENDPOINTS ========
+
+@app.post("/gray/")
+async def gray(imagem: UploadFile = File(...)):
+    try:
+        content = await imagem.read()
+        bgr = to_bgr(content)
+        out = pipeline_gray(bgr)
+        return stream(out["gray"])
+    except Exception as e:
+        # transforma em erro HTTP legível no /docs
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/blur/")
+async def blur_endpoint(imagem: UploadFile = File(...), k: int = 10):
+    try:
+        content = await imagem.read()
+        bgr = to_bgr(content)
+        blurred = box_blur(bgr, k)
+        return stream(blurred)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
