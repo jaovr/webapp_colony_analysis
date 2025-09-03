@@ -1,20 +1,21 @@
+import cv2
 from core.io import to_bgr, to_gray
-from core.denoise import median_filter
-from core.contrast import clahe
-from core.threshold import adaptive_gaussian
+from core.denoise import gaussian_filter, median_filter
+from core.contrast import equalize
+
 
 def run_pipeline(file_bytes: bytes):
-    # 1. Load and convert
-    bgr = to_bgr(file_bytes)
+    # 1) decode + grayscale
+    bgr  = to_bgr(file_bytes)
     gray = to_gray(bgr)
 
-    # 2. Denoise
-    denoised = median_filter(gray, 5)
+    # 2) gaussian blur (ruído geral)
+    g = gaussian_filter(gray, 5)
 
-    # 3. Enhance contrast
-    enhanced = clahe(denoised)
+    # 3) median blur (sal e pimenta)
+    m = median_filter(g, 5)
 
-    # 4. Threshold (binarize)
-    binary = adaptive_gaussian(enhanced, 11, 2)
+    # 4) histogram equalization (global)
+    eq = equalize(m)
 
-    return enhanced
+    return eq
