@@ -1,6 +1,8 @@
+import cv2
+import numpy as np
 from core.io import to_bgr, to_gray
 from core.denoise import median_filter
-from core.contrast import  equalize
+from core.mask import apply_circular_mask
 
 
 def run_pipeline(file_bytes: bytes):
@@ -9,9 +11,19 @@ def run_pipeline(file_bytes: bytes):
     gray = to_gray(bgr)
 
     # 2. Denoise
-    denoised = median_filter(gray, 5)
+    gray_blurred = median_filter(gray, 25)
 
-    # 3. Enhance contrast
-    enhanced = equalize(denoised)
+    circles = cv2.HoughCircles(
+        image=gray_blurred,
+        method=cv2.HOUGH_GRADIENT,
+        dp=1.2,
+        minDist=1000,
+        param1=100,
+        param2=80,
+        minRadius=800,
+        maxRadius=1200
+    )
 
-    return enhanced
+    final_image = apply_circular_mask(bgr, circles)
+
+    return final_image
