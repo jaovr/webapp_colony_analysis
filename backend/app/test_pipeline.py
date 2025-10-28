@@ -1,7 +1,7 @@
 import cv2
 from app.pipeline import run_pipeline
 
-img_path = "./app/13895.jpg"
+img_path = "./app/11890.jpg"
 
 with open(img_path, "rb") as f:
     file_bytes = f.read()
