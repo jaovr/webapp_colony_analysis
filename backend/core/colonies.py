@@ -39,6 +39,7 @@ def detect_colony_regions(
         Binary mask (uint8) with detected colony regions set to 255.
     annotated: np.ndarray
         BGR image with an overlay highlighting the detected colonies.
+        BGR image with contours of the detected colonies drawn for visualization.
     colonies: list[dict]
         Metadata for each colony (area, centroid and bounding box).
     """
@@ -73,6 +74,25 @@ def detect_colony_regions(
     contours, _ = cv2.findContours(
         cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
+    gray = cv2.cvtColor(masked_bgr, cv2.COLOR_BGR2GRAY)
+
+    dish_mask = (gray > 0).astype(np.uint8) * 255
+    dish_area = int(np.count_nonzero(dish_mask))
+    if dish_area == 0:
+        return np.zeros_like(gray), masked_bgr, []
+
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    _, colonies_binary = cv2.threshold(
+        blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )
+
+    colonies_binary = cv2.bitwise_and(colonies_binary, colonies_binary, mask=dish_mask)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    cleaned = cv2.morphologyEx(colonies_binary, cv2.MORPH_OPEN, kernel, iterations=2)
+
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(cleaned)
 
     min_area = max(30, int(dish_area * min_area_ratio))
     max_area = int(dish_area * max_area_ratio) if max_area_ratio else None
@@ -82,6 +102,11 @@ def detect_colony_regions(
 
     for contour in contours:
         area = cv2.contourArea(contour)
+    colony_mask = np.zeros_like(gray)
+    colonies = []
+
+    for label in range(1, num_labels):
+        area = stats[label, cv2.CC_STAT_AREA]
         if area < min_area:
             continue
         if max_area is not None and area > max_area:
@@ -113,6 +138,20 @@ def detect_colony_regions(
                 "centroid": (cx, cy),
                 "bbox": (int(x), int(y), int(w), int(h)),
                 "circularity": float(round(circularity, 3)),
+        component_mask = labels == label
+        colony_mask[component_mask] = 255
+
+        x = int(stats[label, cv2.CC_STAT_LEFT])
+        y = int(stats[label, cv2.CC_STAT_TOP])
+        w = int(stats[label, cv2.CC_STAT_WIDTH])
+        h = int(stats[label, cv2.CC_STAT_HEIGHT])
+        cx, cy = centroids[label]
+
+        colonies.append(
+            {
+                "area": int(area),
+                "centroid": (int(round(cx)), int(round(cy))),
+                "bbox": (x, y, w, h),
             }
         )
 
@@ -124,6 +163,11 @@ def detect_colony_regions(
         )
         cv2.drawContours(overlay, contours, -1, (60, 200, 60), thickness=cv2.FILLED)
         annotated = cv2.addWeighted(overlay, 0.35, annotated, 0.65, 0)
+        contours, _ = cv2.findContours(
+            colony_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        for contour in contours:
+            cv2.drawContours(annotated, [contour], -1, (0, 255, 0), 2)
 
         for colony in colonies:
             cx, cy = colony["centroid"]
