@@ -16,9 +16,9 @@ def _enhance_contrast(channel: np.ndarray) -> np.ndarray:
 
 def detect_colony_regions(
     masked_bgr: np.ndarray,
-    min_area_ratio: float = 5e-4,
-    max_area_ratio: float = 2e-2,
-    min_circularity: float = 0.35,
+    min_area_ratio: float = 2e-4,
+    max_area_ratio: float = 1.5e-2,
+    min_circularity: float = 0.18,
 ):
     """Detect colony-like regions inside a masked Petri dish.
 
@@ -39,7 +39,6 @@ def detect_colony_regions(
         Binary mask (uint8) with detected colony regions set to 255.
     annotated: np.ndarray
         BGR image with an overlay highlighting the detected colonies.
-        BGR image with contours of the detected colonies drawn for visualization.
     colonies: list[dict]
         Metadata for each colony (area, centroid and bounding box).
     """
@@ -47,52 +46,57 @@ def detect_colony_regions(
     if masked_bgr is None or masked_bgr.size == 0:
         return np.zeros((0, 0), dtype=np.uint8), masked_bgr, []
 
-    lab = cv2.cvtColor(masked_bgr, cv2.COLOR_BGR2LAB)
-    a_channel = lab[:, :, 1]
-
-    dish_mask = (a_channel > 0).astype(np.uint8) * 255
-    dish_area = int(np.count_nonzero(dish_mask))
-    if dish_area == 0:
-        return np.zeros_like(a_channel), masked_bgr, []
-
-    enhanced = _enhance_contrast(a_channel)
-
-    adaptive = cv2.adaptiveThreshold(
-        enhanced,
-        255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV,
-        35,
-        2,
-    )
-
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    opened = cv2.morphologyEx(adaptive, cv2.MORPH_OPEN, kernel, iterations=1)
-    closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel, iterations=2)
-    cleaned = cv2.bitwise_and(closed, closed, mask=dish_mask)
-
-    contours, _ = cv2.findContours(
-        cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
     gray = cv2.cvtColor(masked_bgr, cv2.COLOR_BGR2GRAY)
-
     dish_mask = (gray > 0).astype(np.uint8) * 255
     dish_area = int(np.count_nonzero(dish_mask))
     if dish_area == 0:
         return np.zeros_like(gray), masked_bgr, []
 
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    lab = cv2.cvtColor(masked_bgr, cv2.COLOR_BGR2LAB)
+    lightness = lab[:, :, 0]
+    enhanced = _enhance_contrast(lightness)
+    enhanced = cv2.medianBlur(enhanced, 3)
 
-    _, colonies_binary = cv2.threshold(
-        blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    # Highlight both bright and dark blobs with complementary morphology/DoG filters.
+    kernel_large = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    blackhat = cv2.morphologyEx(enhanced, cv2.MORPH_BLACKHAT, kernel_large)
+    tophat = cv2.morphologyEx(enhanced, cv2.MORPH_TOPHAT, kernel_large)
+    dog = cv2.absdiff(
+        cv2.GaussianBlur(enhanced, (0, 0), sigmaX=1.2),
+        cv2.GaussianBlur(enhanced, (0, 0), sigmaX=6.0),
+    )
+    dog = cv2.normalize(dog, None, 0, 255, cv2.NORM_MINMAX)
+
+    combined_response = cv2.max(blackhat, tophat)
+    combined_response = cv2.max(combined_response, dog)
+    combined_response = cv2.GaussianBlur(combined_response, (5, 5), 0)
+    combined_response = cv2.normalize(
+        combined_response, None, 0, 255, cv2.NORM_MINMAX
     )
 
-    colonies_binary = cv2.bitwise_and(colonies_binary, colonies_binary, mask=dish_mask)
+    _, dog_binary = cv2.threshold(
+        combined_response, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
+    adaptive = cv2.adaptiveThreshold(
+        enhanced,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,
+        31,
+        5,
+    )
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    cleaned = cv2.morphologyEx(colonies_binary, cv2.MORPH_OPEN, kernel, iterations=2)
+    candidates = cv2.bitwise_or(dog_binary, adaptive)
+    candidates = cv2.bitwise_and(candidates, candidates, mask=dish_mask)
 
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(cleaned)
+    kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    kernel_medium = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    cleaned = cv2.morphologyEx(candidates, cv2.MORPH_OPEN, kernel_small, iterations=1)
+    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel_medium, iterations=1)
+
+    contours, _ = cv2.findContours(
+        cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
 
     min_area = max(30, int(dish_area * min_area_ratio))
     max_area = int(dish_area * max_area_ratio) if max_area_ratio else None
@@ -102,11 +106,6 @@ def detect_colony_regions(
 
     for contour in contours:
         area = cv2.contourArea(contour)
-    colony_mask = np.zeros_like(gray)
-    colonies = []
-
-    for label in range(1, num_labels):
-        area = stats[label, cv2.CC_STAT_AREA]
         if area < min_area:
             continue
         if max_area is not None and area > max_area:
@@ -121,9 +120,9 @@ def detect_colony_regions(
 
         mask = np.zeros_like(cleaned)
         cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
+        mask = cv2.bitwise_and(mask, mask, mask=dish_mask)
 
-        non_zero = cv2.bitwise_and(mask, mask, mask=dish_mask)
-        colony_mask = cv2.bitwise_or(colony_mask, non_zero)
+        colony_mask = cv2.bitwise_or(colony_mask, mask)
 
         x, y, w, h = cv2.boundingRect(contour)
         moments = cv2.moments(contour)
@@ -138,20 +137,6 @@ def detect_colony_regions(
                 "centroid": (cx, cy),
                 "bbox": (int(x), int(y), int(w), int(h)),
                 "circularity": float(round(circularity, 3)),
-        component_mask = labels == label
-        colony_mask[component_mask] = 255
-
-        x = int(stats[label, cv2.CC_STAT_LEFT])
-        y = int(stats[label, cv2.CC_STAT_TOP])
-        w = int(stats[label, cv2.CC_STAT_WIDTH])
-        h = int(stats[label, cv2.CC_STAT_HEIGHT])
-        cx, cy = centroids[label]
-
-        colonies.append(
-            {
-                "area": int(area),
-                "centroid": (int(round(cx)), int(round(cy))),
-                "bbox": (x, y, w, h),
             }
         )
 
@@ -161,13 +146,8 @@ def detect_colony_regions(
         contours, _ = cv2.findContours(
             colony_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
-        cv2.drawContours(overlay, contours, -1, (60, 200, 60), thickness=cv2.FILLED)
-        annotated = cv2.addWeighted(overlay, 0.35, annotated, 0.65, 0)
-        contours, _ = cv2.findContours(
-            colony_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        for contour in contours:
-            cv2.drawContours(annotated, [contour], -1, (0, 255, 0), 2)
+        cv2.drawContours(overlay, contours, -1, (70, 220, 70), thickness=cv2.FILLED)
+        annotated = cv2.addWeighted(overlay, 0.4, annotated, 0.6, 0)
 
         for colony in colonies:
             cx, cy = colony["centroid"]
