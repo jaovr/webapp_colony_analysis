@@ -3,6 +3,7 @@ import numpy as np
 from core.io import to_bgr, to_gray
 from core.denoise import median_filter
 from core.mask import apply_circular_mask
+from core.colonies import detect_colony_regions
 
 def run_pipeline(file_bytes: bytes):
     # 1) Load & gray
@@ -61,7 +62,9 @@ def run_pipeline(file_bytes: bytes):
     # 6) Aplica máscara só se achou círculo; senão devolve original (ou loga/raise)
     if circles is not None and len(circles[0]) > 0:
         circles = np.uint16(np.around(circles))  # inteiros p/ a máscara
-        final_image = apply_circular_mask(bgr, circles)
+        masked = apply_circular_mask(bgr, circles)
+        _, annotated, _ = detect_colony_regions(masked)
+        final_image = annotated
     else:
         # print("⚠️ Nenhum círculo detectado — ajuste min/maxRadius ou param2.")
         final_image = bgr  # evita crash; você pode levantar um erro aqui
