@@ -3,14 +3,16 @@ import numpy as np
 
 
 def _enhance_contrast(channel: np.ndarray) -> np.ndarray:
-    """Enhance local contrast to make colonies stand out."""
+    """Enhance local contrast and suppress slow-varying illumination."""
 
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(channel)
 
-    background = cv2.GaussianBlur(enhanced, (0, 0), sigmaX=11, sigmaY=11)
-    subtracted = cv2.addWeighted(enhanced, 1.5, background, -0.5, 0)
-    normalized = cv2.normalize(subtracted, None, 0, 255, cv2.NORM_MINMAX)
+    # Remove the low-frequency background to emphasise colonies.
+    blurred_background = cv2.GaussianBlur(enhanced, (0, 0), sigmaX=21, sigmaY=21)
+    high_pass = cv2.subtract(enhanced, blurred_background)
+    normalized = cv2.normalize(high_pass, None, 0, 255, cv2.NORM_MINMAX)
+
     return normalized.astype(np.uint8)
 
 
@@ -55,56 +57,57 @@ def detect_colony_regions(
     lab = cv2.cvtColor(masked_bgr, cv2.COLOR_BGR2LAB)
     lightness = lab[:, :, 0]
     enhanced = _enhance_contrast(lightness)
-    enhanced = cv2.medianBlur(enhanced, 3)
 
-    # Highlight both bright and dark blobs with complementary morphology/DoG filters.
-    kernel_large = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    blackhat = cv2.morphologyEx(enhanced, cv2.MORPH_BLACKHAT, kernel_large)
-    tophat = cv2.morphologyEx(enhanced, cv2.MORPH_TOPHAT, kernel_large)
-    dog = cv2.absdiff(
-        cv2.GaussianBlur(enhanced, (0, 0), sigmaX=1.2),
-        cv2.GaussianBlur(enhanced, (0, 0), sigmaX=6.0),
-    )
-    dog = cv2.normalize(dog, None, 0, 255, cv2.NORM_MINMAX)
-
-    combined_response = cv2.max(blackhat, tophat)
-    combined_response = cv2.max(combined_response, dog)
-    combined_response = cv2.GaussianBlur(combined_response, (5, 5), 0)
-    combined_response = cv2.normalize(
-        combined_response, None, 0, 255, cv2.NORM_MINMAX
+    enhanced = cv2.GaussianBlur(enhanced, (5, 5), 0)
+    _, binary = cv2.threshold(
+        enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
     )
 
-    _, dog_binary = cv2.threshold(
-        combined_response, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-    )
-    adaptive = cv2.adaptiveThreshold(
-        enhanced,
-        255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV,
-        31,
-        5,
-    )
+    binary = cv2.bitwise_and(binary, binary, mask=dish_mask)
 
-    candidates = cv2.bitwise_or(dog_binary, adaptive)
-    candidates = cv2.bitwise_and(candidates, candidates, mask=dish_mask)
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_open, iterations=1)
+    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel_close, iterations=1)
 
-    kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    kernel_medium = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    cleaned = cv2.morphologyEx(candidates, cv2.MORPH_OPEN, kernel_small, iterations=1)
-    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel_medium, iterations=1)
-
-    contours, _ = cv2.findContours(
-        cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    sure_bg = cv2.dilate(cleaned, kernel_close, iterations=2)
+    distance = cv2.distanceTransform(cleaned, cv2.DIST_L2, 3)
+    _, sure_fg = cv2.threshold(
+        distance, 0.35 * distance.max() if distance.max() > 0 else 0, 1.0, cv2.THRESH_BINARY
     )
+    sure_fg = sure_fg.astype(np.uint8)
+    unknown = cv2.subtract(sure_bg, sure_fg * 255)
+
+    _, markers = cv2.connectedComponents(sure_fg)
+    markers = markers + 1
+    markers[unknown == 255] = 0
+
+    # Watershed expects a 3-channel image and modifies the marker array in place.
+    watershed_input = cv2.cvtColor(masked_bgr, cv2.COLOR_BGR2RGB)
+    cv2.watershed(watershed_input, markers)
 
     min_area = max(30, int(dish_area * min_area_ratio))
     max_area = int(dish_area * max_area_ratio) if max_area_ratio else None
 
     colony_mask = np.zeros_like(cleaned)
-    colonies = []
+    colonies: list[dict] = []
 
-    for contour in contours:
+    unique_labels = np.unique(markers)
+    for label in unique_labels:
+        if label <= 1:
+            # Background and watershed boundaries are labelled with values <= 1.
+            continue
+
+        component_mask = np.uint8(markers == label) * 255
+        component_mask = cv2.bitwise_and(component_mask, component_mask, mask=dish_mask)
+
+        contours, _ = cv2.findContours(
+            component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        if not contours:
+            continue
+
+        contour = max(contours, key=cv2.contourArea)
         area = cv2.contourArea(contour)
         if area < min_area:
             continue
@@ -118,11 +121,7 @@ def detect_colony_regions(
         if circularity < min_circularity:
             continue
 
-        mask = np.zeros_like(cleaned)
-        cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
-        mask = cv2.bitwise_and(mask, mask, mask=dish_mask)
-
-        colony_mask = cv2.bitwise_or(colony_mask, mask)
+        cv2.drawContours(colony_mask, [contour], -1, 255, thickness=cv2.FILLED)
 
         x, y, w, h = cv2.boundingRect(contour)
         moments = cv2.moments(contour)
