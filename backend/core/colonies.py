@@ -74,16 +74,32 @@ def detect_colony_regions(
 
     binary = cv2.bitwise_and(binary, binary, mask=dish_mask)
 
+    # Otsu sometimes favours the bright agar instead of the darker colonies.
+    # If most of the dish turned white we flip the polarity and treat the
+    # darker spots as foreground instead.
+    foreground_ratio = (
+        float(cv2.countNonZero(binary)) / float(dish_area) if dish_area else 0.0
+    )
+    if foreground_ratio > 0.35:
+        _, binary = cv2.threshold(
+            enhanced, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+        )
+        binary = cv2.bitwise_and(binary, binary, mask=dish_mask)
+
     kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_open, iterations=1)
     cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel_close, iterations=1)
 
-    sure_bg = cv2.dilate(cleaned, kernel_close, iterations=2)
+    if cv2.countNonZero(cleaned) == 0:
+        return np.zeros_like(cleaned), masked_bgr, []
+
+    sure_bg = cv2.dilate(cleaned, kernel_close, iterations=1)
     distance = cv2.distanceTransform(cleaned, cv2.DIST_L2, 3)
-    _, sure_fg = cv2.threshold(
-        distance, 0.35 * distance.max() if distance.max() > 0 else 0, 1.0, cv2.THRESH_BINARY
-    )
+    if distance.max() > 0:
+        _, sure_fg = cv2.threshold(distance, 0.35 * distance.max(), 1.0, cv2.THRESH_BINARY)
+    else:
+        sure_fg = np.zeros_like(distance)
     sure_fg = sure_fg.astype(np.uint8)
     unknown = cv2.subtract(sure_bg, sure_fg * 255)
 
