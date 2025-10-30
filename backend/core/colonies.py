@@ -20,7 +20,10 @@ def detect_colony_regions(
     masked_bgr: np.ndarray,
     min_area_ratio: float = 2e-4,
     max_area_ratio: float = 1.5e-2,
-    min_circularity: float = 0.18,
+    min_circularity: float = 0.25,
+    min_extent: float = 0.45,
+    max_axis_ratio: float = 2.2,
+    min_solidity: float = 0.8,
 ):
     """Detect colony-like regions inside a masked Petri dish.
 
@@ -34,6 +37,12 @@ def detect_colony_regions(
         Maximum area for a component, relative to the disk area.
     min_circularity:
         Minimum circularity (4π·area / perimeter²) to keep a component.
+    min_extent:
+        Minimum ratio between the contour area and its bounding box area.
+    max_axis_ratio:
+        Maximum ratio between the major and minor axes derived from the contour moments.
+    min_solidity:
+        Minimum ratio between the contour area and its convex hull area.
 
     Returns
     -------
@@ -121,12 +130,39 @@ def detect_colony_regions(
         if circularity < min_circularity:
             continue
 
-        cv2.drawContours(colony_mask, [contour], -1, 255, thickness=cv2.FILLED)
-
         x, y, w, h = cv2.boundingRect(contour)
+        bounding_area = w * h
+        if bounding_area == 0:
+            continue
+        extent = area / bounding_area
+        if extent < min_extent:
+            continue
+
+        hull = cv2.convexHull(contour)
+        hull_area = cv2.contourArea(hull)
+        if hull_area == 0:
+            continue
+        solidity = area / hull_area
+        if solidity < min_solidity:
+            continue
+
         moments = cv2.moments(contour)
         if moments["m00"] == 0:
             continue
+
+        cov_xx = moments["mu20"] / moments["m00"]
+        cov_yy = moments["mu02"] / moments["m00"]
+        cov_xy = moments["mu11"] / moments["m00"]
+        covariance = np.array([[cov_xx, cov_xy], [cov_xy, cov_yy]])
+        eigenvalues = np.linalg.eigvalsh(covariance)
+        if not np.all(np.isfinite(eigenvalues)) or eigenvalues[0] <= 0:
+            continue
+        axis_ratio = np.sqrt(eigenvalues[1] / eigenvalues[0])
+        if axis_ratio > max_axis_ratio:
+            continue
+
+        cv2.drawContours(colony_mask, [contour], -1, 255, thickness=cv2.FILLED)
+
         cx = int(moments["m10"] / moments["m00"])
         cy = int(moments["m01"] / moments["m00"])
 
