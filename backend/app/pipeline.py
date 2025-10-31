@@ -5,6 +5,9 @@ from core.io import to_bgr, to_gray
 from core.denoise import median_filter
 from core.mask import apply_circular_mask
 
+from core.contrast import equalize
+from numpy.ma.core import bitwise_or
+
 
 def _save(path, img):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -19,6 +22,7 @@ def run_pipeline(file_bytes: bytes, debug_dir: str | None = None):
     # 1) Carregar e converter
     bgr = to_bgr(file_bytes)
     gray = to_gray(bgr)
+
     if ddir:
         _save(f"{ddir}/00_input.jpg", bgr)
         _save(f"{ddir}/10_gray.png", gray)
@@ -76,4 +80,9 @@ def run_pipeline(file_bytes: bytes, debug_dir: str | None = None):
     if ddir:
         _save(f"{ddir}/50_masked.jpg", masked)
 
-    return masked, {"circle": [x, y, r], "debug_dir": ddir}
+
+    gray_2 = to_gray(masked)
+    equalize_img = equalize(gray_2)
+    result = bitwise_or(equalize_img, equalize_img)
+
+    return result, {"circle": [x, y, r], "debug_dir": ddir}
