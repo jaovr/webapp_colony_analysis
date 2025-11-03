@@ -2,7 +2,7 @@
 import cv2
 from app.pipeline import run_pipeline
 
-img_path = "./app/510.jpg"  # coloca o caminho da imagem aqui
+img_path = "./app/971.jpg"  # coloca o caminho da imagem aqui
 
 with open(img_path, "rb") as f:
     result, meta = run_pipeline(f.read(), debug_dir="debug")
